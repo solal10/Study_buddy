@@ -4,10 +4,12 @@ from dotenv import load_dotenv
 from openai import OpenAI
 from openai import APIError
 from pymongo import MongoClient
+from bson import ObjectId
 import os
 import logging
 import re
 from datetime import datetime
+from auth import hash_password, check_password, generate_token, token_required
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -16,9 +18,24 @@ logger = logging.getLogger(__name__)
 # Load environment variables
 load_dotenv()
 
+# Initialize MongoDB connection
+try:
+    mongodb_uri = os.getenv('MONGODB_URI')
+    if not mongodb_uri:
+        raise ValueError('MONGODB_URI environment variable not set')
+    
+    mongo_client = MongoClient(mongodb_uri)
+    mongo_db = mongo_client.study_buddy  # Explicitly specify the database name
+    # Test the connection
+    mongo_client.server_info()
+    logger.info('Successfully connected to MongoDB')
+except Exception as e:
+    logger.error(f'Failed to connect to MongoDB: {e}')
+    raise
+
 # Initialize Flask app
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={r"/*": {"origins": "*", "supports_credentials": True}})
 
 # System prompt for the AI
 SYSTEM_PROMPT = """You are Study Buddy, a personal AI tutor helping students learn Artificial Intelligence and Machine Learning.
@@ -137,17 +154,20 @@ def get_user_context(session_id):
     """Get or create user context from MongoDB"""
     if not session_id:
         return {'onboarded': False}
-        
-    user = users_collection.find_one({'session_id': session_id})
-    if not user:
-        user = {
+    
+    # Use upsert to either find or create the user
+    user = mongo_db.users.find_one_and_update(
+        {'session_id': session_id},
+        {'$setOnInsert': {
             'session_id': session_id,
             'level': '',
             'preference': '',
             'interests': [],
             'onboarded': False
-        }
-        users_collection.insert_one(user)
+        }},
+        upsert=True,
+        return_document=True
+    )
     return user
 
 def update_user_context(session_id, message, response):
@@ -157,17 +177,17 @@ def update_user_context(session_id, message, response):
     
     # Level detection with more variations
     if any(word in message_lower for word in ['beginner', 'basic', 'start', 'new']):
-        users_collection.update_one(
+        mongo_db.users.update_one(
             {'session_id': session_id},
             {'$set': {'level': 'beginner'}}
         )
     elif any(word in message_lower for word in ['intermediate', 'mid', 'middle', 'moderate']):
-        users_collection.update_one(
+        mongo_db.users.update_one(
             {'session_id': session_id},
             {'$set': {'level': 'intermediate'}}
         )
     elif any(word in message_lower for word in ['advanced', 'expert', 'experienced', 'proficient']):
-        users_collection.update_one(
+        mongo_db.users.update_one(
             {'session_id': session_id},
             {'$set': {'level': 'advanced'}}
         )
@@ -217,34 +237,41 @@ def get_openai_client():
         raise ValueError('OPENAI_API_KEY not found in environment variables')
     return OpenAI(api_key=api_key)
 
-@app.route('/welcome-message', methods=['GET'])
+@app.route('/welcome-message')
+@token_required
 def welcome_message():
     try:
+        user_id = request.user_id
+        user = users_collection.find_one({'_id': ObjectId(user_id)})
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+            
         return jsonify({'message': WELCOME_MESSAGE})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 @app.route('/ask', methods=['POST'])
+@token_required
 def ask():
     try:
         # Validate request
         data = request.get_json()
         if not data:
             return jsonify({'error': 'No JSON data provided'}), 400
-            
-        session_id = data.get('session_id')
-        if not session_id:
-            return jsonify({'error': 'Session ID is required'}), 400
 
         message = data.get('message', '')
+        user_id = request.user_id
 
         # Get user context
         try:
-            user_context = get_user_context(session_id)
+            user = users_collection.find_one({'_id': ObjectId(user_id)})
+            if not user:
+                return jsonify({'error': 'User not found'}), 404
+            user_context = user.get('context', {})
         except Exception as e:
             return jsonify({'error': f'Failed to get user context: {str(e)}'}), 500
         
-        if not user_context.get('onboarded'):
+        if not user.get('onboarded'):
             return jsonify({'response': 'Please complete the onboarding form first.'})
 
         # Generate system prompt based on user context
@@ -276,14 +303,13 @@ def ask():
             
             if current_topic and current_topic != 'Unknown':
                 # Get current user data to check if topic exists
-                user_data = users_collection.find_one({'session_id': session_id})
-                existing_topics = user_data.get('topics', [])
+                existing_topics = user.get('topics', [])
                 
                 if current_topic not in existing_topics:
                     # Update MongoDB with new topic and timestamp
                     current_time = datetime.utcnow().isoformat() + 'Z'
                     users_collection.update_one(
-                        {'session_id': session_id},
+                        {'_id': ObjectId(user_id)},
                         {
                             '$addToSet': {'topics': current_topic},
                             '$set': {f'topics_timestamps.{current_topic}': current_time}
@@ -311,65 +337,67 @@ def ask():
         return jsonify({"response": ERROR_MESSAGES['general_error']}), 500
 
 @app.route('/onboarding', methods=['POST'])
+@token_required
 def onboarding():
     try:
         data = request.get_json()
         if not data:
             return jsonify({'error': 'No JSON data provided'}), 400
 
-        session_id = data.get('session_id')
-        if not session_id:
-            return jsonify({'error': 'Session ID is required'}), 400
-        
-        # Validate required fields
-        required_fields = ['level', 'preference']
-        for field in required_fields:
-            if not data.get(field):
-                return jsonify({'error': f'{field} is required'}), 400
-        
-        # Update user context in MongoDB
+        user_id = request.user_id
+        user = users_collection.find_one({'_id': ObjectId(user_id)})
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+
+        # Update user context with onboarding data
+        knowledge_level = data.get('knowledge_level')
+        goals = data.get('goals')
+        pace = data.get('pace')
+        interests = data.get('interests', [])
+
+        if not all([knowledge_level, goals, pace]):
+            return jsonify({'error': 'Missing required onboarding information'}), 400
+
+        update_data = {
+            'onboarded': True,
+            'context': {
+                'knowledge_level': knowledge_level,
+                'goals': goals,
+                'pace': pace,
+                'interests': interests
+            }
+        }
+
         users_collection.update_one(
-            {'session_id': session_id},
-            {
-                '$set': {
-                    'level': data.get('level'),
-                    'preference': data.get('preference'),
-                    'onboarded': True
-                }
-            },
-            upsert=True
+            {'_id': ObjectId(user_id)},
+            {'$set': update_data}
         )
-        
-        return jsonify({
-            'success': True,
-            'message': 'Onboarding completed successfully'
-        })
+
+        return jsonify({'message': 'Onboarding completed successfully'})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 @app.route('/topics-status', methods=['GET'])
+@token_required
 def get_topics_status():
     """Get the completion status of all topics for a user."""
     try:
-        session_id = request.args.get('session_id')
-        if not session_id:
-            return jsonify({'error': 'Session ID is required'}), 400
-
-        # Get user data from MongoDB
-        user_data = users_collection.find_one({'session_id': session_id})
-        if not user_data:
-            return jsonify({'completed_topics': []})
+        user_id = request.user_id
+        user = users_collection.find_one({'_id': ObjectId(user_id)})
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
 
         # Return completed topics and their timestamps
         return jsonify({
-            'completed_topics': user_data.get('topics', []),
-            'topics_timestamps': user_data.get('topics_timestamps', {})
+            'completed_topics': user.get('topics', []),
+            'topics_timestamps': user.get('topics_timestamps', {})
         })
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 @app.route('/mark-topic', methods=['PATCH'])
+@token_required
 def mark_topic():
     """Mark a topic as completed or uncompleted."""
     try:
@@ -377,18 +405,22 @@ def mark_topic():
         if not data:
             return jsonify({'error': 'No JSON data provided'}), 400
 
-        session_id = data.get('session_id')
         topic = data.get('topic')
         completed = data.get('completed', True)
 
-        if not session_id or not topic:
-            return jsonify({'error': 'Session ID and topic are required'}), 400
+        if not topic:
+            return jsonify({'error': 'Topic is required'}), 400
+
+        user_id = request.user_id
+        user = users_collection.find_one({'_id': ObjectId(user_id)})
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
 
         if completed:
             # Mark topic as completed with timestamp
             current_time = datetime.utcnow().isoformat() + 'Z'
             users_collection.update_one(
-                {'session_id': session_id},
+                {'_id': ObjectId(user_id)},
                 {
                     '$addToSet': {'topics': topic},
                     '$set': {f'topics_timestamps.{topic}': current_time}
@@ -410,6 +442,7 @@ def mark_topic():
         return jsonify({'error': str(e)}), 500
 
 @app.route('/submit-quiz', methods=['POST'])
+@token_required
 def submit_quiz():
     try:
         data = request.get_json()
@@ -420,8 +453,14 @@ def submit_quiz():
             if field not in data:
                 return jsonify({'error': f'Missing required field: {field}'}), 400
         
-        # Get the user's document
-        user = mongo_db.users.find_one({'session_id': data['session_id']})
+        # Validate required fields
+        required_fields = ['topic', 'score', 'total', 'timestamp']
+        for field in required_fields:
+            if field not in data:
+                return jsonify({'error': f'Missing required field: {field}'}), 400
+
+        user_id = request.user_id
+        user = users_collection.find_one({'_id': ObjectId(user_id)})
         if not user:
             return jsonify({'error': 'User not found'}), 404
         
@@ -434,15 +473,15 @@ def submit_quiz():
         }
         
         # Update or insert quiz result
-        mongo_db.users.update_one(
-            {'session_id': data['session_id']},
+        users_collection.update_one(
+            {'_id': ObjectId(user_id)},
             {
                 '$pull': {'quiz_history': {'topic': data['topic']}}
             }
         )
         
-        mongo_db.users.update_one(
-            {'session_id': data['session_id']},
+        users_collection.update_one(
+            {'_id': ObjectId(user_id)},
             {
                 '$push': {'quiz_history': quiz_result}
             }
@@ -452,6 +491,107 @@ def submit_quiz():
     
     except Exception as e:
         logger.error(f'Error submitting quiz result: {e}')
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/register', methods=['POST'])
+def register():
+    try:
+        data = request.get_json()
+        
+        # Validate required fields
+        required_fields = ['email', 'password']
+        for field in required_fields:
+            if field not in data:
+                return jsonify({'error': f'Missing required field: {field}'}), 400
+
+        # Check if user already exists
+        existing_user = users_collection.find_one({'email': data['email']})
+        if existing_user:
+            return jsonify({'error': 'Email already registered'}), 409
+
+        # Hash password and create user
+        hashed_password = hash_password(data['password'])
+        user = {
+            'email': data['email'],
+            'password': hashed_password,
+            'level': '',
+            'preference': '',
+            'interests': [],
+            'onboarded': False,
+            'created_at': datetime.utcnow()
+        }
+
+        result = users_collection.insert_one(user)
+        token = generate_token(str(result.inserted_id))
+
+        return jsonify({
+            'token': token,
+            'user': {
+                'id': str(result.inserted_id),
+                'email': user['email'],
+                'onboarded': user['onboarded']
+            }
+        })
+
+    except Exception as e:
+        logger.error(f'Error registering user: {e}')
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/login', methods=['POST'])
+def login():
+    try:
+        data = request.get_json()
+
+        # Validate required fields
+        required_fields = ['email', 'password']
+        for field in required_fields:
+            if field not in data:
+                return jsonify({'error': f'Missing required field: {field}'}), 400
+
+        # Find user by email
+        user = mongo_db.users.find_one({'email': data['email']})
+        if not user:
+            return jsonify({'error': 'Invalid email or password'}), 401
+
+        # Verify password
+        if not check_password(data['password'], user['password']):
+            return jsonify({'error': 'Invalid email or password'}), 401
+
+        # Generate token
+        token = generate_token(str(user['_id']))
+
+        return jsonify({
+            'token': token,
+            'user': {
+                'id': str(user['_id']),
+                'email': user['email'],
+                'onboarded': user['onboarded']
+            }
+        })
+
+    except Exception as e:
+        logger.error(f'Error logging in: {e}')
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/me', methods=['GET'])
+@token_required
+def get_current_user():
+    try:
+        user = mongo_db.users.find_one({'_id': ObjectId(request.user_id)})
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+
+        return jsonify({
+            'id': str(user['_id']),
+            'email': user['email'],
+            'level': user['level'],
+            'preference': user['preference'],
+            'interests': user['interests'],
+            'onboarded': user['onboarded']
+        })
+
+    except Exception as e:
+        logger.error(f'Error getting user: {e}')
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':

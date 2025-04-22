@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { quizData } from '../data/quizData';
 
@@ -6,6 +6,13 @@ const QuizPage = () => {
   const { topic } = useParams();
   const [userAnswers, setUserAnswers] = useState({});
   const [showResults, setShowResults] = useState(false);
+  const [sessionId, setSessionId] = useState(null);
+
+  useEffect(() => {
+    // Get session ID from localStorage
+    const storedSessionId = localStorage.getItem('session_id');
+    setSessionId(storedSessionId);
+  }, []);
 
   // Get quiz data for this topic
   console.log('Topic:', topic);
@@ -57,9 +64,32 @@ const QuizPage = () => {
   };
 
   // Handle quiz submission
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
+    const score = calculateScore();
     setShowResults(true);
+
+    try {
+      const response = await fetch('http://localhost:5001/submit-quiz', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          session_id: sessionId,
+          topic: topic,
+          score: score.correct,
+          total: score.total,
+          timestamp: new Date().toISOString()
+        })
+      });
+
+      if (!response.ok) {
+        console.error('Failed to save quiz results');
+      }
+    } catch (error) {
+      console.error('Error saving quiz results:', error);
+    }
   };
 
   // Get result status for a question
@@ -84,15 +114,6 @@ const QuizPage = () => {
               Back to Chat
             </Link>
           </div>
-
-          {showResults && (
-            <div className="mb-6 p-4 bg-gray-50 rounded-lg">
-              <h2 className="text-xl font-semibold mb-2">Quiz Results</h2>
-              <p className="text-lg">
-                Score: {score.correct} out of {score.total} ({score.percentage}%)
-              </p>
-            </div>
-          )}
 
           <form onSubmit={handleSubmit}>
             <div className="space-y-6">
@@ -161,6 +182,15 @@ const QuizPage = () => {
               </div>
             )}
           </form>
+
+          {showResults && (
+            <div className="mt-6 p-4 bg-gray-50 rounded-lg">
+              <h2 className="text-xl font-semibold mb-2">Quiz Results</h2>
+              <p className="text-lg">
+                Score: {score.correct} out of {score.total} ({score.percentage}%)
+              </p>
+            </div>
+          )}
         </div>
       </div>
     </div>

@@ -1,152 +1,146 @@
-import { useState, useEffect } from 'react'
-import { v4 as uuidv4 } from 'uuid'
+import { useState } from 'react'
 
 export default function OnboardingForm({ onComplete }) {
-  const [sessionId, setSessionId] = useState('')
   const [formData, setFormData] = useState({
-    level: '',
-    preference: ''
+    knowledge_level: '',
+    goals: '',
+    pace: '',
+    interests: []
   })
-
-  useEffect(() => {
-    // Get existing session ID or create new one
-    const existingSessionId = localStorage.getItem('sessionId')
-    if (existingSessionId) {
-      setSessionId(existingSessionId)
-    } else {
-      const newSessionId = uuidv4()
-      localStorage.setItem('sessionId', newSessionId)
-      setSessionId(newSessionId)
-    }
-  }, [])
 
   const handleSubmit = async (e) => {
     e.preventDefault()
 
     // Validate form
-    if (!formData.level || !formData.preference) {
-      alert('Please select your knowledge level and learning preference')
+    if (!formData.knowledge_level || !formData.goals || !formData.pace) {
+      alert('Please fill in all required fields')
       return
     }
 
-    // Generate a unique session ID
-    const sessionId = uuidv4()
-    localStorage.setItem('sessionId', sessionId)
+    const token = localStorage.getItem('token')
+    if (!token) {
+      alert('Please log in first')
+      return
+    }
 
     try {
       const response = await fetch('http://localhost:5001/onboarding', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
         },
-        body: JSON.stringify({
-          session_id: sessionId,
-          level: formData.level,
-          preference: formData.preference
-        })
+        body: JSON.stringify(formData)
       })
 
       if (!response.ok) {
-        throw new Error('Network response was not ok')
+        const data = await response.json()
+        throw new Error(data.error || 'Network response was not ok')
       }
 
       const data = await response.json()
-      
-      if (data.success) {
-        onComplete()
-      } else {
-        throw new Error(data.error || 'Failed to save preferences')
-      }
+      onComplete()
     } catch (error) {
       console.error('Error:', error)
-      alert('Failed to save preferences. Please try again.')
-      localStorage.removeItem('sessionId')
-    }
-  }
-
-  const handleLevelChange = (e) => {
-    setFormData(prev => ({ ...prev, level: e.target.value }))
-  }
-
-  const handlePreferenceChange = (e) => {
-    setFormData(prev => ({ ...prev, preference: e.target.value }))
-  }
-
-  const handleInterestChange = (e) => {
-    const value = e.target.value
-    if (value === 'Other') {
-      setFormData(prev => ({
-        ...prev,
-        showOtherInput: e.target.checked,
-        otherInterest: e.target.checked ? prev.otherInterest : '',
-        interests: e.target.checked 
-          ? prev.interests
-          : prev.interests.filter(i => !i.startsWith('Other:'))
-      }))
-    } else {
-      setFormData(prev => ({
-        ...prev,
-        interests: e.target.checked
-          ? [...prev.interests, value]
-          : prev.interests.filter(i => i !== value)
-      }))
+      alert(error.message || 'Failed to save preferences. Please try again.')
     }
   }
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-6 p-6">
+    <div className="max-w-2xl mx-auto p-6 bg-white rounded-lg shadow-lg">
       <h2 className="text-2xl font-bold text-center text-gray-800 mb-8">Welcome to AI Study Buddy!</h2>
       
-      {/* Knowledge Level */}
-      <div className="space-y-4">
-        <label className="block text-lg font-medium text-gray-700">Your knowledge level:</label>
+      <form onSubmit={handleSubmit} className="space-y-6">
+        {/* Knowledge Level */}
         <div className="space-y-2">
-          {['beginner', 'intermediate', 'advanced'].map((level) => (
-            <label key={level} className="flex items-center p-3 border rounded-lg hover:bg-gray-50 cursor-pointer">
-              <input
-                type="radio"
-                name="level"
-                value={level}
-                checked={formData.level === level}
-                onChange={handleLevelChange}
-                className="form-radio h-4 w-4 text-blue-600"
-              />
-              <span className="ml-2 capitalize">{level}</span>
-            </label>
-          ))}
+          <label className="block text-sm font-medium text-gray-700">Your current knowledge level in AI/ML:</label>
+          <select
+            value={formData.knowledge_level}
+            onChange={(e) => setFormData(prev => ({ ...prev, knowledge_level: e.target.value }))}
+            className="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm rounded-md"
+            required
+          >
+            <option value="">Select your level</option>
+            <option value="beginner">Beginner - New to AI/ML</option>
+            <option value="intermediate">Intermediate - Some experience</option>
+            <option value="advanced">Advanced - Significant experience</option>
+          </select>
         </div>
-      </div>
 
-      {/* Learning Preference */}
-      <div className="space-y-4">
-        <label className="block text-lg font-medium text-gray-700">How do you prefer to learn?</label>
+        {/* Learning Goals */}
         <div className="space-y-2">
-          {[
-            'short explanations',
-            'hands-on code',
-            'in-depth theory'
-          ].map((pref) => (
-            <label key={pref} className="flex items-center p-3 border rounded-lg hover:bg-gray-50 cursor-pointer">
-              <input
-                type="radio"
-                name="preference"
-                value={pref}
-                checked={formData.preference === pref}
-                onChange={handlePreferenceChange}
-                className="form-radio h-4 w-4 text-blue-600"
-              />
-              <span className="ml-2 capitalize">{pref}</span>
-            </label>
-          ))}
+          <label className="block text-sm font-medium text-gray-700">What are your learning goals?</label>
+          <textarea
+            value={formData.goals}
+            onChange={(e) => setFormData(prev => ({ ...prev, goals: e.target.value }))}
+            className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+            rows="3"
+            placeholder="E.g., Understanding AI fundamentals, building ML models, etc."
+            required
+          />
         </div>
-      </div>
 
-      <button
-        type="submit"
-        className="w-full bg-blue-600 text-white py-3 px-4 rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-colors"
-      >
-        Start Learning
-      </button>
-    </form>
+        {/* Learning Pace */}
+        <div className="space-y-2">
+          <label className="block text-sm font-medium text-gray-700">Preferred learning pace:</label>
+          <select
+            value={formData.pace}
+            onChange={(e) => setFormData(prev => ({ ...prev, pace: e.target.value }))}
+            className="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm rounded-md"
+            required
+          >
+            <option value="">Select your pace</option>
+            <option value="relaxed">Relaxed - 1-2 hours per week</option>
+            <option value="moderate">Moderate - 3-5 hours per week</option>
+            <option value="intensive">Intensive - 6+ hours per week</option>
+          </select>
+        </div>
+
+        {/* Specific Interests */}
+        <div className="space-y-2">
+          <label className="block text-sm font-medium text-gray-700">Areas of interest (optional):</label>
+          <div className="grid grid-cols-2 gap-4">
+            {[
+              'Deep Learning',
+              'Computer Vision',
+              'Natural Language Processing',
+              'Reinforcement Learning',
+              'Ethics in AI',
+              'AI Applications',
+              'Machine Learning Theory',
+              'Data Science'
+            ].map(interest => (
+              <label key={interest} className="inline-flex items-center">
+                <input
+                  type="checkbox"
+                  value={interest}
+                  checked={formData.interests.includes(interest)}
+                  onChange={(e) => {
+                    const isChecked = e.target.checked
+                    setFormData(prev => ({
+                      ...prev,
+                      interests: isChecked
+                        ? [...prev.interests, interest]
+                        : prev.interests.filter(i => i !== interest)
+                    }))
+                  }}
+                  className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                />
+                <span className="ml-2 text-sm text-gray-600">{interest}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+
+        <div className="flex justify-end">
+          <button
+            type="submit"
+            className="inline-flex justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+          >
+            Start Learning
+          </button>
+        </div>
+      </form>
+    </div>
   )
 }

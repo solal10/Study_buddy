@@ -1,6 +1,7 @@
 import PropTypes from 'prop-types';
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useAuth } from '../contexts/AuthContext';
 
 const TopicItem = ({ topic, completed, onToggle, onAskTopic }) => {
   const navigate = useNavigate();
@@ -102,8 +103,12 @@ const Sidebar = ({ sessionId, onAskTopic }) => {
       'ai-applications',
       'ethics-in-ai'
     ],
-    '🧠 Machine Learning': [
-      'machine-learning-basics',
+    '🤖 Core AI Concepts': [
+      'artificial-intelligence',
+      'machine-learning',
+      'deep-learning'
+    ],
+    '🧠 Learning Types': [
       'supervised-learning',
       'unsupervised-learning',
       'reinforcement-learning'
@@ -121,43 +126,43 @@ const Sidebar = ({ sessionId, onAskTopic }) => {
     ]
   };
 
+  const { user } = useAuth();
+
   useEffect(() => {
-    const fetchTopics = async () => {
+    if (!user) return;
+
+    const fetchTopicsStatus = async () => {
       try {
-        const response = await fetch(`http://localhost:5001/topics-status?session_id=${sessionId}`);
-        if (!response.ok) throw new Error('Failed to fetch topics');
+        const token = localStorage.getItem('token');
+        const response = await fetch('http://localhost:5001/topics-status', {
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        });
+        if (!response.ok) throw new Error('Failed to fetch topics status');
+
         const data = await response.json();
         setCompletedTopics(data.completed_topics || []);
       } catch (error) {
-        console.error('Error fetching topics:', error);
+        console.error('Error fetching topics status:', error);
       } finally {
         setLoading(false);
       }
     };
 
-    if (sessionId) {
-      fetchTopics();
-    } else {
-      setLoading(false);
-    }
-  }, [sessionId]);
+    fetchTopicsStatus();
+  }, [user]);
 
   const handleTopicToggle = async (topic) => {
     try {
-      // Optimistic update
-      const newCompletedTopics = completedTopics.includes(topic)
-        ? completedTopics.filter(t => t !== topic)
-        : [...completedTopics, topic];
-      
-      setCompletedTopics(newCompletedTopics);
-
-      const response = await fetch('http://localhost:5001/mark_topic', {
-        method: 'POST',
+      const token = localStorage.getItem('token');
+      const response = await fetch('http://localhost:5001/mark-topic', {
+        method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
-          session_id: sessionId,
           topic,
           completed: !completedTopics.includes(topic),
         }),
@@ -212,7 +217,6 @@ const Sidebar = ({ sessionId, onAskTopic }) => {
 };
 
 Sidebar.propTypes = {
-  sessionId: PropTypes.string,
   onAskTopic: PropTypes.func.isRequired,
 };
 
