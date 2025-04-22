@@ -1,11 +1,14 @@
 import { useState, useRef, useEffect } from 'react'
+import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
 import OnboardingForm from './components/OnboardingForm'
+import Sidebar from './components/Sidebar'
+import QuizPage from './components/QuizPage'
 
 function App() {
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const [isLoading, setIsLoading] = useState(false)
-  const [showOnboarding, setShowOnboarding] = useState(false)
+  const [showOnboarding, setShowOnboarding] = useState(true)
   const messagesEndRef = useRef(null)
 
   const scrollToBottom = () => {
@@ -143,11 +146,32 @@ function App() {
     </div>
   )
 
+  // Handle topic selection from sidebar
+  const handleAskTopic = (topic) => {
+    setInput(`Tell me about ${topic}`);
+    setMessages([]);
+  };
+
   return (
-    <div className="min-h-screen bg-gray-100 py-6 flex flex-col justify-center sm:py-12">
-      <div className="relative py-3 sm:max-w-xl sm:mx-auto">
-        <div className="relative px-4 py-10 bg-white shadow-lg sm:rounded-3xl sm:p-20 min-w-[600px]">
-          {showOnboarding ? (
+    <Router>
+      <Routes>
+        <Route
+          path="/"
+          element={
+            <div className="min-h-screen bg-gray-100 p-6">
+              <div className="max-w-7xl mx-auto flex gap-6">
+                {!showOnboarding && (
+                  <div className="flex-none">
+                    <Sidebar 
+                      sessionId={localStorage.getItem('sessionId')} 
+                      onAskTopic={handleAskTopic}
+                    />
+                  </div>
+                )}
+                
+                <div className="flex-grow">
+                  <div className="bg-white shadow-lg rounded-lg overflow-hidden p-6">
+                    {showOnboarding ? (
             <OnboardingForm
               onComplete={async () => {
                 try {
@@ -209,10 +233,17 @@ function App() {
                 </form>
               </div>
             </>
-          )}
+            )}
+          </div>
         </div>
       </div>
     </div>
+          }
+        />
+        <Route path="/quiz/:topic" element={<QuizPage />} />
+        <Route path="*" element={<Navigate to="/" />} />
+      </Routes>
+    </Router>
   )
 }
 

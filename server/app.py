@@ -7,6 +7,7 @@ from pymongo import MongoClient
 import os
 import logging
 import re
+from datetime import datetime
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -59,24 +60,78 @@ users_collection = db.users
 
 # Topic detection patterns
 TOPIC_PATTERNS = {
-    'ai_basics': r'what is AI|artificial intelligence basics|AI fundamentals',
-    'ml_basics': r'what is machine learning|ML basics|machine learning fundamentals',
-    'supervised_learning': r'supervised learning|classification|regression',
-    'unsupervised_learning': r'unsupervised learning|clustering|dimensionality reduction',
-    'neural_networks': r'neural network|deep learning|backpropagation',
-    'nlp': r'natural language processing|NLP|text processing',
-    'computer_vision': r'computer vision|image processing|CV',
-    'reinforcement_learning': r'reinforcement learning|RL|reward system'
+    # 📚 Foundations
+    'What is AI': r'\b(what is AI|artificial intelligence basics|AI fundamentals|introduction to AI)\b',
+    'AI Applications': r'\b(applications of AI|real-world AI|AI use cases|AI in healthcare|AI in finance|AI deployment)\b',
+    'Ethics in AI': r'\b(AI ethics|bias|fairness|responsible AI|AI safety|ethical considerations)\b',
+
+    # 🧠 Machine Learning Core
+    'Machine Learning Basics': r'\b(what is machine learning|ML basics|machine learning fundamentals|types of ML)\b',
+    'Supervised Learning': r'\b(supervised learning|classification|regression|training data|labeled data)\b',
+    'Unsupervised Learning': r'\b(unsupervised learning|clustering|unlabeled data)\b',
+    'Reinforcement Learning': r'\b(reinforcement learning|RL|reward system|agent|environment|policy)\b',
+    'Overfitting and Underfitting': r'\b(overfitting|underfitting|bias[- ]variance tradeoff|generalization)\b',
+    'Hyperparameter Tuning': r'\b(hyperparameter tuning|grid search|random search|parameter optimization|model tuning)\b',
+
+    # 🧮 Algorithms & Techniques
+    'Neural Networks': r'\b(neural network|deep learning|backpropagation|layers|neurons|activation functions)\b',
+    'Decision Trees & Random Forests': r'\b(decision tree|random forest|tree[- ]based model|gini impurity|entropy split)\b',
+    'K-Nearest Neighbors': r'\b(k[- ]nearest neighbors|knn|instance[- ]based learning|similarity[- ]based learning)\b',
+    'Support Vector Machines': r'\b(support vector machine|svm|maximum margin classifier|kernel trick)\b',
+
+    # 🛠 Workflow & Utilities
+    'Data Preprocessing': r'\b(data preprocessing|cleaning|feature engineering|normalization|data transformation)\b',
+    'Feature Selection': r'\b(feature selection|selecting features|redundant features|dimensionality reduction techniques)\b',
+    'Dimensionality Reduction': r'\b(dimensionality reduction|PCA|principal component analysis|t[- ]?SNE|feature compression)\b',
+    'Model Evaluation': r'\b(model evaluation|evaluation metrics|model metrics|accuracy|precision|recall|confusion matrix|cross[- ]?validation)\b',
+
+    # 🧪 Specializations
+    'Natural Language Processing': r'\b(natural language processing|NLP|text processing|tokenization|text analysis)\b',
+    'Computer Vision': r'\b(computer vision|image processing|CV|image recognition|object detection)\b',
+
+    # 🔄 Fallback
+    'Other': r'.*'
 }
 
-def detect_topics(message):
-    """Detect topics in the user's message using regex patterns."""
-    detected = []
-    message = message.lower()
+def extract_topic_from_response(response):
+    """Extract the main topic from the assistant's response."""
+    # First try explicit topic indicators
+    topic_indicators = [
+        r"Let's talk about ([^.]+)",
+        r"In this lesson, we'll cover ([^.]+)",
+        r"Today we'll learn about ([^.]+)",
+        r"Let's explore ([^.]+)",
+        r"Understanding ([^:]+):",
+        r"Now we'll discuss ([^.]+)",
+        r"Let's dive into ([^.]+)",
+        r"Moving on to ([^,]+),"
+    ]
+    
+    # Try to find explicit topic mentions first
+    for pattern in topic_indicators:
+        match = re.search(pattern, response)
+        if match:
+            topic = match.group(1).strip()
+            # Find the closest matching predefined topic
+            for defined_topic in TOPIC_PATTERNS.keys():
+                if defined_topic != 'Other' and (topic.lower() in defined_topic.lower() or defined_topic.lower() in topic.lower()):
+                    return defined_topic
+    
+    # If no explicit topic found, try pattern matching
     for topic, pattern in TOPIC_PATTERNS.items():
-        if re.search(pattern, message, re.IGNORECASE):
-            detected.append(topic)
-    return detected
+        if topic != 'Other' and re.search(pattern, response, re.IGNORECASE):
+            return topic
+    
+    # If still no match, return Unknown
+    return "Unknown"
+
+def detect_topics_from_text(text):
+    """Detect topics in text using regex patterns."""
+    text = text.lower()
+    for topic, pattern in TOPIC_PATTERNS.items():
+        if topic != 'Other' and re.search(pattern, text, re.IGNORECASE):
+            return topic
+    return "Unknown"
 
 def get_user_context(session_id):
     """Get or create user context from MongoDB"""
@@ -131,7 +186,14 @@ def get_system_prompt(user_context):
 
     if user_context.get('level'):
         prompt += f"\n\nThe user is a {user_context['level']} learner who prefers {user_context['preference']}."
-        
+    
+    # Add covered topics to the prompt
+    if user_context.get('topics'):
+        covered_topics = ', '.join(user_context['topics'])
+        prompt += f"\n\nThe user has already learned about: {covered_topics}. "
+        prompt += "Avoid repeating those topics unless explicitly asked. "
+        prompt += "Continue progressing based on their level and preference."
+    
     return prompt
 
 # Error messages
@@ -207,12 +269,34 @@ def ask():
         
         assistant_response = chat_completion.choices[0].message.content
         
-        # Update user context with new topics
-        update_user_context(session_id, message, assistant_response)
-        
-        # Extract and return the response
-        ai_response = chat_completion.choices[0].message.content
-        return jsonify({"response": ai_response})
+        # Extract and update topics from assistant's response
+        try:
+            # Extract main topic from response
+            current_topic = extract_topic_from_response(assistant_response)
+            
+            if current_topic and current_topic != 'Unknown':
+                # Get current user data to check if topic exists
+                user_data = users_collection.find_one({'session_id': session_id})
+                existing_topics = user_data.get('topics', [])
+                
+                if current_topic not in existing_topics:
+                    # Update MongoDB with new topic and timestamp
+                    current_time = datetime.utcnow().isoformat() + 'Z'
+                    users_collection.update_one(
+                        {'session_id': session_id},
+                        {
+                            '$addToSet': {'topics': current_topic},
+                            '$set': {f'topics_timestamps.{current_topic}': current_time}
+                        }
+                    )
+                    print(f'Added new topic: {current_topic} at {current_time}')
+        except Exception as e:
+            print(f'Error updating topics: {e}')
+
+        return jsonify({
+            'response': assistant_response,
+            'detected_topic': current_topic if current_topic != 'Unknown' else None
+        })
 
     except ValueError as e:
         logger.error(f"Configuration error: {str(e)}")
@@ -261,6 +345,113 @@ def onboarding():
             'message': 'Onboarding completed successfully'
         })
     except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/topics-status', methods=['GET'])
+def get_topics_status():
+    """Get the completion status of all topics for a user."""
+    try:
+        session_id = request.args.get('session_id')
+        if not session_id:
+            return jsonify({'error': 'Session ID is required'}), 400
+
+        # Get user data from MongoDB
+        user_data = users_collection.find_one({'session_id': session_id})
+        if not user_data:
+            return jsonify({'completed_topics': []})
+
+        # Return completed topics and their timestamps
+        return jsonify({
+            'completed_topics': user_data.get('topics', []),
+            'topics_timestamps': user_data.get('topics_timestamps', {})
+        })
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/mark-topic', methods=['PATCH'])
+def mark_topic():
+    """Mark a topic as completed or uncompleted."""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'No JSON data provided'}), 400
+
+        session_id = data.get('session_id')
+        topic = data.get('topic')
+        completed = data.get('completed', True)
+
+        if not session_id or not topic:
+            return jsonify({'error': 'Session ID and topic are required'}), 400
+
+        if completed:
+            # Mark topic as completed with timestamp
+            current_time = datetime.utcnow().isoformat() + 'Z'
+            users_collection.update_one(
+                {'session_id': session_id},
+                {
+                    '$addToSet': {'topics': topic},
+                    '$set': {f'topics_timestamps.{topic}': current_time}
+                }
+            )
+        else:
+            # Remove topic from completed list
+            users_collection.update_one(
+                {'session_id': session_id},
+                {
+                    '$pull': {'topics': topic},
+                    '$unset': {f'topics_timestamps.{topic}': ''}
+                }
+            )
+
+        return jsonify({'success': True})
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/submit-quiz', methods=['POST'])
+def submit_quiz():
+    try:
+        data = request.get_json()
+        
+        # Validate required fields
+        required_fields = ['session_id', 'topic', 'score', 'total', 'timestamp']
+        for field in required_fields:
+            if field not in data:
+                return jsonify({'error': f'Missing required field: {field}'}), 400
+        
+        # Get the user's document
+        user = mongo_db.users.find_one({'session_id': data['session_id']})
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+        
+        # Prepare quiz result
+        quiz_result = {
+            'topic': data['topic'],
+            'score': data['score'],
+            'total': data['total'],
+            'timestamp': data['timestamp']
+        }
+        
+        # Update or insert quiz result
+        mongo_db.users.update_one(
+            {'session_id': data['session_id']},
+            {
+                '$pull': {'quiz_history': {'topic': data['topic']}}
+            }
+        )
+        
+        mongo_db.users.update_one(
+            {'session_id': data['session_id']},
+            {
+                '$push': {'quiz_history': quiz_result}
+            }
+        )
+        
+        return jsonify({'success': True})
+    
+    except Exception as e:
+        logger.error(f'Error submitting quiz result: {e}')
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
